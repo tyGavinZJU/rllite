@@ -3,11 +3,10 @@ import numpy as np
 import torch
 from collections import deque
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
 class NormalizedActions(gym.ActionWrapper):
-    def _action(self, action):
+    def action(self, action):
         low  = self.action_space.low
         high = self.action_space.high
         
@@ -16,7 +15,7 @@ class NormalizedActions(gym.ActionWrapper):
         
         return action
 
-    def _reverse_action(self, action):
+    def reverse_action(self, action):
         low  = self.action_space.low
         high = self.action_space.high
         
@@ -24,37 +23,6 @@ class NormalizedActions(gym.ActionWrapper):
         action = np.clip(action, low, high)
         
         return action
-    
-def test_env(env, model, render=False):
-    state = env.reset()
-    done = False
-    total_reward = 0
-    if render: 
-        env.render()
-    while not done:
-        state = torch.FloatTensor(state).unsqueeze(0).to(device)
-        policy, _, _ = model(state)
-        action = policy.multinomial(1)
-        next_state, reward, done, _ = env.step(action.item())
-        state = next_state
-        total_reward += reward
-        if render: 
-            env.render()
-    return total_reward
-
-def test_env2(env, model, vis=False):
-    state = env.reset()
-    if vis: env.render()
-    done = False
-    total_reward = 0
-    while not done:
-        state = torch.FloatTensor(state).unsqueeze(0).to(device)
-        dist, _ = model(state)
-        next_state, reward, done, _ = env.step(dist.sample().cpu().numpy()[0])
-        state = next_state
-        if vis: env.render()
-        total_reward += reward
-    return total_reward
 
 def make_env(env_name):
     def _thunk():
@@ -158,9 +126,6 @@ class MaxAndSkipEnv(gym.Wrapper):
         # most recent raw observations (for max pooling across time steps)
         self._obs_buffer = np.zeros((2,) + env.observation_space.shape, dtype=np.uint8)
         self._skip = skip
-
-    def reset(self):
-        return self.env.reset()
 
     def step(self, action):
         """Repeat action, sum reward, and max over last observations."""
@@ -335,16 +300,18 @@ class GymDelay(gym.Wrapper):
 
         self.act_dim = self.action_space.shape[0]
         self.obs_dim = self.observation_space.shape[0]
+    
+        self._max_episode_steps = self.env._max_episode_steps
+
+        init_state = self.reset()
 
         self.act_buffer = [ [0]*self.act_dim ]*self.act_delay
-        self.obs_buffer = [ [ [0]*self.obs_dim, 0, False, None ] ]*self.obs_delay
-
-        self.reset()
+        self.obs_buffer = [ [ init_state, 0, False, None ] ]*self.obs_delay
 
     def reset(self, **kwargs):
             self.act_buffer = [ [0]*self.act_dim ]*self.act_delay
             self.obs_buffer = [ [ [0]*self.obs_dim, 0, False, {} ] ]*self.obs_delay
-            self.env.reset(**kwargs)
+            return self.env.reset(**kwargs)
 
     def step(self, action):
         self.act_buffer.append(action)
@@ -352,9 +319,3 @@ class GymDelay(gym.Wrapper):
         new_obs, reward, done, info =  self.env.step(old_action)
         self.obs_buffer.append([new_obs, reward, done, info])
         return self.obs_buffer.pop(0)
-    
-    def close(self, **kwargs):
-        self.env.close(**kwargs)
-
-    def render(self, **kwargs):
-        self.env.render(**kwargs)

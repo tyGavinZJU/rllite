@@ -5,7 +5,7 @@ import operator
 
 class ReplayBuffer:
     def __init__(self, capacity):
-        self.capacity = capacity
+        self.capacity = int(capacity)
         self.buffer = []
         self.position = 0
     
@@ -25,7 +25,7 @@ class ReplayBuffer:
     
 class ReplayBuffer2(object):
     def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
+        self.buffer = deque(maxlen=int(capacity))
 
     def push(self, state, action, reward, next_state, done):
         state = np.expand_dims(state, 0)
@@ -50,7 +50,7 @@ class ReplayBuffer3(object):
             overflows the old memories are dropped.
         """
         self._storage = []
-        self._maxsize = size
+        self._maxsize = int(size)
         self._next_idx = 0
 
     def __len__(self):
@@ -100,10 +100,23 @@ class ReplayBuffer3(object):
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         return self._encode_sample(idxes)
 
+class ReplayBuffer4(object):
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=int(capacity))
+    
+    def push(self, state, action, reward, next_state, done, goal):
+        self.buffer.append((state, action, reward, next_state, done, goal))
+    
+    def sample(self, batch_size):
+        state, action, reward, next_state, done, goal = zip(*random.sample(self.buffer, batch_size))
+        return np.stack(state), action, reward, np.stack(next_state), done, np.stack(goal)
+    
+    def __len__(self):
+        return len(self.buffer)
         
 class EpisodicReplayMemory(object):
     def __init__(self, capacity, max_episode_length):
-        self.num_episodes = capacity // max_episode_length
+        self.num_episodes = int(capacity) // int(max_episode_length)
         self.buffer = deque(maxlen=self.num_episodes)
         self.buffer.append([])
         self.position = 0
@@ -459,5 +472,51 @@ class NaivePrioritizedBuffer(object):
         for idx, prio in zip(batch_indices, batch_priorities):
             self.priorities[idx] = prio
 
+    def __len__(self):
+        return len(self.buffer)
+    
+class DelayReplayBuffer:
+    """
+    now: t
+    act_delay: m
+    obs_delay: n
+    Causal relationship: <s_{m+n+t}, a_t, s_{m+n+t+1}>
+    """
+    def __init__(self, capacity, act_dim, act_delay=0, obs_delay=0):
+        self.capacity = int(capacity)
+        self.act_dim = act_dim
+        self.act_delay = act_delay
+        self.obs_delay = obs_delay
+        self.act_buffer = []
+        self.buffer = []
+        self.position = 0
+        self.reset_act_buffer()
+    
+    def push_act(self, action):
+        self.act_buffer.append(action)
+        return self.act_buffer.pop(0)
+    
+    def reset_act_buffer(self):
+        """
+        (m+n) action buffer
+        Everytime reset action buffer, we should give up (m+n) steps state information,
+        because these states are not sampled by your policy
+        """
+        self.act_buffer = [ [0]*self.act_dim ]*(self.act_delay + self.obs_delay)
+    
+    def push(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        # push a_{m+n+t} and get a_t
+        delay_act = self.push_act(action)
+        
+        self.buffer[self.position] = (state, delay_act, reward, next_state, done)
+        self.position = (self.position + 1) % self.capacity
+    
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = map(np.stack, zip(*batch))
+        return state, action, reward, next_state, done
+    
     def __len__(self):
         return len(self.buffer)

@@ -5,19 +5,49 @@ import numpy as np
 import torch
 import torch.optim as optim
 
+from rllite import Base
+from rllite.common import ActorCritic3,make_env,test_env2,compute_gae,SubprocVecEnv
+from tensorboardX import SummaryWriter
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")   
 
-from rllite.common import ActorCritic3,DummyVecEnv,make_env,plot,test_env2,compute_gae
-
-class PPO():
-    def __init__(self):
-        self.num_envs = 8
-        self.env_name = "Pendulum-v0"
+class PPO(Base):
+    def __init__(
+            self,
+            env_name = 'BipedalWalkerHardcore-v2',
+            load_dir = './ckpt',
+            log_dir = "./log",
+            seed = 1,
+            num_envs = 8,
+            num_steps = 20,
+            mini_batch_size = 5,
+            ppo_epochs = 4,
+            max_episode_steps = None,
+            save_steps_num = 5000
+            ):
+        self.env_name = env_name
+        self.load_dir = load_dir
+        self.log_dir = log_dir
+        self.seed = seed
+        self.num_envs = num_envs
+        self.num_steps = num_steps
+        self.mini_batch_size = mini_batch_size
+        self.ppo_epochs = ppo_epochs
+        self.max_episode_steps = max_episode_steps
+        self.save_steps_num = save_steps_num
         
-        self.envs = [make_env(self.env_name) for i in range(self.num_envs)]
-        self.envs = DummyVecEnv(self.envs)
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        self.writer = SummaryWriter(log_dir=self.log_dir)
         
         self.env = gym.make(self.env_name)
+        if self.max_episode_steps != None:
+            self.env._max_episode_steps = self.max_episode_steps
+        else:
+            self.max_episode_steps = self.env._max_episode_steps
+        
+        self.envs = [make_env(self.env_name) for i in range(self.num_envs)]
+        self.envs = SubprocVecEnv(self.envs)
         
         self.num_inputs  = self.envs.observation_space.shape[0]
         self.num_outputs = self.envs.action_space.shape[0]
@@ -25,21 +55,32 @@ class PPO():
         #Hyper params:
         self.hidden_size      = 256
         self.lr               = 3e-4
-        self.num_steps        = 20
-        self.mini_batch_size  = 5
-        self.ppo_epochs       = 4
-        self.threshold_reward = -200
         
         self.model = ActorCritic3(self.num_inputs, self.num_outputs, self.hidden_size).to(device)
+        try:
+            self.load(directory=self.load_dir, filename=self.env_name)
+            print('Load model successfully !')
+        except:
+            print('WARNING: No model to load !')
+            
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         
-        self.max_frames = 150
-        self.frame_idx  = 0
-        self.test_rewards = []
-        
+        self.total_steps = 0        
         self.state = self.envs.reset()
-        self.early_stop = False
         
+    def load(self, directory, filename):
+        self.model.load(directory=self.load_dir, filename=self.env_name)
+        
+    def save(self, directory, filename):
+        self.model.save(directory=self.load_dir, filename=self.env_name)
+      
+    def predict(self, state):
+        state = torch.FloatTensor(state).unsqueeze(0).to(device)
+        dist, _ = self.model(state)
+        action = dist.sample()
+        action = action.cpu().numpy()[0]
+        return action
+    
     def ppo_iter(self, states, actions, log_probs, returns, advantage):
         batch_size = states.size(0)
         for _ in range(batch_size // self.mini_batch_size):
@@ -66,8 +107,8 @@ class PPO():
                 loss.backward()
                 self.optimizer.step()
                 
-    def learn(self):
-        while self.frame_idx < self.max_frames and not self.early_stop:
+    def learn(self, max_steps=1e7):
+        while self.total_steps < max_steps:# and not self.early_stop:
             log_probs = []
             values    = []
             states    = []
@@ -95,14 +136,14 @@ class PPO():
                 actions.append(action)
                 
                 state = next_state
-                self.frame_idx += 1
+                self.total_steps += 1
                 
-                if self.frame_idx % 1000 == 0:
-                    test_reward = np.mean([test_env2() for _ in range(10)])
-                    self.test_rewards.append(test_reward)
-                    plot(self.frame_idx, self.test_rewards)
-                    if test_reward > self.threshold_reward: self.early_stop = True
-                    
+                if self.total_steps % 100 == 0:
+                    test_reward = np.mean([test_env2(self.env, self.model) for _ in range(10)])
+                    self.writer.add_scalar('test_reward', test_reward, self.total_steps)
+
+                if self.total_steps % self.save_steps_num == 0:
+                    self.save(directory=self.load_dir, filename=self.env_name)
         
             next_state = torch.FloatTensor(next_state).to(device)
             _, next_value = self.model(next_state)
@@ -150,5 +191,5 @@ class PPO():
         
 if __name__ == '__main__':
     model = PPO()
-    model.save_expert_traj(50)
     model.learn()
+    #model.save_expert_traj(50)
